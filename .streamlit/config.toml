@@ -1,0 +1,3 @@
+[client]
+# Hide Deploy and other developer toolbar items on localhost.
+toolbarMode = "viewer"
