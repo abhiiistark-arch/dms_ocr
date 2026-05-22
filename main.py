@@ -347,6 +347,7 @@ def canonical_failure_reason(reason: str) -> str:
     families = (
         (("missing mandatory", "missing mandato", "mandatory field"), "Missing mandatory field"),
         (("duplicate policy",), "Duplicate policy"),
+        (("dms request failed", "dms request"), "DMS request failed"),
         (("invalid format", "format error", "invalid date"), "Invalid format"),
         (("timeout", "timed out"), "Timeout"),
         (("ocr", "extraction failed"), "OCR / extraction error"),
@@ -370,6 +371,46 @@ def group_failure_reason_counts(counts: dict[str, int]) -> dict[str, int]:
     return grouped
 
 
+# Caps keep dashboard HTML/CSV bounded when date ranges include many failures.
+MAX_BREAKDOWN_VARIANTS = 50
+MAX_BREAKDOWN_VARIANT_CHARS = 500
+MAX_BREAKDOWN_FULL_CHARS = 16_000
+
+
+def truncate_breakdown_message(msg: str, max_chars: int = MAX_BREAKDOWN_VARIANT_CHARS) -> str:
+    if len(msg) <= max_chars:
+        return msg
+    return msg[: max_chars - 1] + "…"
+
+
+def format_group_full_error_message(variants: dict[str, int]) -> str:
+    """Summarize variant messages with per-line and total size limits."""
+    sorted_variants = sorted(variants.items(), key=lambda x: x[1], reverse=True)
+    if len(sorted_variants) == 1:
+        msg, _ = sorted_variants[0]
+        return truncate_breakdown_message(msg, MAX_BREAKDOWN_FULL_CHARS)
+
+    lines: list[str] = []
+    hidden_variants = 0
+    hidden_occurrences = 0
+    for index, (msg, cnt) in enumerate(sorted_variants):
+        if index >= MAX_BREAKDOWN_VARIANTS:
+            hidden_variants += 1
+            hidden_occurrences += cnt
+            continue
+        lines.append(f"{truncate_breakdown_message(msg)} ({cnt:,})")
+
+    body = "\n\n".join(lines)
+    if hidden_variants:
+        body += (
+            f"\n\n… and {hidden_variants:,} more variant(s) "
+            f"({hidden_occurrences:,} occurrences not listed)"
+        )
+    if len(body) > MAX_BREAKDOWN_FULL_CHARS:
+        body = body[: MAX_BREAKDOWN_FULL_CHARS - 1] + "…"
+    return body
+
+
 def failure_reason_breakdown_rows(
     items: list[dict[str, Any]],
     failure_attr: str = ATTR_FAILURE_REASON,
@@ -388,18 +429,11 @@ def failure_reason_breakdown_rows(
     rows: list[dict[str, Any]] = []
     for group, variants in by_group.items():
         total = sum(variants.values())
-        sorted_variants = sorted(variants.items(), key=lambda x: x[1], reverse=True)
-        if len(sorted_variants) == 1:
-            full_message = sorted_variants[0][0]
-        else:
-            full_message = "\n\n".join(
-                f"{msg} ({cnt:,})" for msg, cnt in sorted_variants
-            )
         rows.append(
             {
                 "failure_reason": group,
                 "count": total,
-                "full_error_message": full_message,
+                "full_error_message": format_group_full_error_message(variants),
             }
         )
     rows.sort(key=lambda r: r["count"], reverse=True)
