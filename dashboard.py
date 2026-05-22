@@ -678,21 +678,39 @@ def build_filtered_records_csv(
     return df.to_csv(index=False).encode("utf-8-sig")
 
 
-def render_download_report_button(
-    *,
-    start: date,
-    end: date,
-    filter_by: str,
+@st.cache_data(ttl=300, show_spinner="Preparing report download…")
+def cached_full_report_csv(
+    region: str,
     table_name: str,
-    stats: dict[str, int],
+    status_attr: str,
+    filter_by: str,
+    start_iso: str,
+    end_iso: str,
+    stats_total: int,
+    stats_success: int,
+    stats_failed: int,
     success_rate: float,
     records_scanned: int,
-    breakdown: pd.DataFrame | None,
-    channel_rows: list[dict[str, Any]] | None,
-    filtered_items: list[dict[str, Any]],
-    status_attr: str,
-) -> None:
-    report_csv = build_full_report_csv(
+) -> bytes:
+    """Build report once per date range; avoids rebuilding a huge CSV every rerun."""
+    start = date.fromisoformat(start_iso)
+    end = date.fromisoformat(end_iso)
+    target_dates = date_range_set(start, end)
+    all_items = load_table_items(region, table_name, status_attr)
+    filtered = filter_by_dates(all_items, filter_by, target_dates)
+    stats = {
+        "total": stats_total,
+        "success": stats_success,
+        "failed": stats_failed,
+    }
+    breakdown_rows = failure_reason_breakdown_rows(filtered)
+    breakdown = pd.DataFrame(breakdown_rows) if breakdown_rows else None
+    if breakdown is not None and not breakdown.empty:
+        breakdown["share_%"] = (
+            breakdown["count"] / breakdown["count"].sum() * 100
+        ).round(1)
+    channel_rows = channel_stats(filtered, status_attr)
+    return build_full_report_csv(
         start=start,
         end=end,
         filter_by=filter_by,
@@ -702,8 +720,34 @@ def render_download_report_button(
         records_scanned=records_scanned,
         breakdown=breakdown,
         channel_rows=channel_rows,
-        filtered_items=filtered_items,
+        filtered_items=filtered,
         status_attr=status_attr,
+    )
+
+
+def render_download_report_button(
+    *,
+    start: date,
+    end: date,
+    filter_by: str,
+    table_name: str,
+    stats: dict[str, int],
+    success_rate: float,
+    records_scanned: int,
+    status_attr: str,
+) -> None:
+    report_csv = cached_full_report_csv(
+        DEFAULT_REGION,
+        table_name,
+        status_attr,
+        filter_by,
+        start.isoformat(),
+        end.isoformat(),
+        stats["total"],
+        stats["success"],
+        stats["failed"],
+        success_rate,
+        records_scanned,
     )
     st.download_button(
         label="Download report",
@@ -978,9 +1022,6 @@ def main() -> None:
             stats=stats,
             success_rate=success_rate,
             records_scanned=len(all_items),
-            breakdown=breakdown,
-            channel_rows=channel_rows,
-            filtered_items=filtered,
             status_attr=status_attr,
         )
 
